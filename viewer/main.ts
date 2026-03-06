@@ -35,6 +35,7 @@ interface SessionInfo {
   lastOffset: number;
   agentId: number;
   cwd?: string;
+  summary?: string;
 }
 
 interface CopilotEvent {
@@ -136,6 +137,16 @@ function loadWallTiles(): string[][][] | null {
 }
 
 function loadDefaultLayout(): Record<string, unknown> | null {
+  // 1. Try user's saved layout (~/.pixel-agents/layout.json)
+  const savedPath = path.join(os.homedir(), '.pixel-agents', 'layout.json');
+  if (fs.existsSync(savedPath)) {
+    try {
+      const layout = JSON.parse(fs.readFileSync(savedPath, 'utf-8'));
+      console.log(`[Viewer] Loaded saved layout from ${savedPath} (${layout.cols}×${layout.rows})`);
+      return layout;
+    } catch { /* fall through */ }
+  }
+  // 2. Fall back to bundled default
   const layoutPath = path.join(ASSET_DIR, 'default-layout.json');
   if (!fs.existsSync(layoutPath)) return null;
   return JSON.parse(fs.readFileSync(layoutPath, 'utf-8'));
@@ -168,25 +179,37 @@ function formatToolStatus(toolName: string, input?: Record<string, unknown>): st
   }
 }
 
-function readWorkspaceYaml(sessionDir: string): string | undefined {
+function readWorkspaceYaml(sessionDir: string): { cwd?: string; summary?: string } {
   const yamlPath = path.join(sessionDir, 'workspace.yaml');
-  if (!fs.existsSync(yamlPath)) return undefined;
+  if (!fs.existsSync(yamlPath)) return {};
   const content = fs.readFileSync(yamlPath, 'utf-8');
   const cwdMatch = content.match(/cwd:\s*(.+)/);
-  return cwdMatch?.[1]?.trim();
+  const summaryMatch = content.match(/^summary:\s*(.+)$/m);
+  return {
+    cwd: cwdMatch?.[1]?.trim(),
+    summary: summaryMatch?.[1]?.trim(),
+  };
 }
 
 function isSessionActive(sessionDir: string): boolean {
+  // Primary: session.db locked by a running Copilot CLI process
+  // On Windows, rename fails with EBUSY when file is locked by another process
   const dbPath = path.join(sessionDir, 'session.db');
-  if (!fs.existsSync(dbPath)) return false;
-  try {
-    // If we can't open exclusively, a Copilot CLI process has it locked → active
-    const fd = fs.openSync(dbPath, fs.constants.O_RDWR | fs.constants.O_EXCL);
-    fs.closeSync(fd);
-    return false; // opened fine → not locked → inactive
-  } catch {
-    return true; // locked → active CLI process
+  if (fs.existsSync(dbPath)) {
+    try {
+      fs.renameSync(dbPath, dbPath); // same-name rename tests lock without side effects
+      // Rename succeeded → not locked → check fallback
+    } catch {
+      return true; // EBUSY → locked → active CLI process
+    }
   }
+  // Fallback: workspace.yaml created in the last 60 seconds (session just started, no db yet)
+  const yamlPath = path.join(sessionDir, 'workspace.yaml');
+  if (fs.existsSync(yamlPath)) {
+    const stat = fs.statSync(yamlPath);
+    if (Date.now() - stat.mtimeMs < 60_000) return true;
+  }
+  return false;
 }
 
 function discoverSessions(): void {
@@ -199,19 +222,18 @@ function discoverSessions(): void {
     if (sessions.has(uuid)) continue;
 
     const sessionDir = path.join(COPILOT_DIR, uuid);
-    const eventsPath = path.join(sessionDir, 'events.jsonl');
-    if (!fs.existsSync(eventsPath)) continue;
 
-    // Only show sessions with an active Copilot CLI process (session.db locked)
+    // Only show sessions with an active Copilot CLI process
     if (!isSessionActive(sessionDir)) continue;
 
-    const cwd = readWorkspaceYaml(sessionDir);
+    const eventsPath = path.join(sessionDir, 'events.jsonl');
+    const { cwd, summary } = readWorkspaceYaml(sessionDir);
     const agentId = nextAgentId++;
-    sessions.set(uuid, { uuid, eventsPath, lastOffset: 0, agentId, cwd });
+    sessions.set(uuid, { uuid, eventsPath, lastOffset: 0, agentId, cwd, summary });
 
-    // Notify renderer of new agent
-    send('agentCreated', { id: agentId, folderName: cwd?.split(/[/\\]/).pop() || uuid.slice(0, 8) });
-    console.log(`[Viewer] Discovered active session ${uuid.slice(0, 8)}... (agent #${agentId})`);
+    const folderName = summary || cwd?.split(/[/\\]/).pop() || uuid.slice(0, 8);
+    send('agentCreated', { id: agentId, folderName });
+    console.log(`[Viewer] Discovered active session ${uuid.slice(0, 8)}... (agent #${agentId}) — ${summary || folderName}`);
   }
 }
 
@@ -384,7 +406,7 @@ app.whenReady().then(() => {
       const agentIds = Array.from(sessions.values()).map(s => s.agentId);
       const folderNames: Record<number, string> = {};
       for (const s of sessions.values()) {
-        folderNames[s.agentId] = s.cwd?.split(/[/\\]/).pop() || s.uuid.slice(0, 8);
+        folderNames[s.agentId] = s.summary || s.cwd?.split(/[/\\]/).pop() || s.uuid.slice(0, 8);
       }
       if (agentIds.length > 0) {
         send('existingAgents', { agents: agentIds, agentMeta: {}, folderNames });
