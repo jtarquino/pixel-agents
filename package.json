@@ -59,6 +59,8 @@
     "package": "npm run check-types && npm run lint && node esbuild.js --production && npm run build:webview",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "import-tileset": "tsx scripts/import-tileset-cli.ts"
   },
   "devDependencies": {
@@ -72,6 +74,7 @@
     "pngjs": "^7.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.54.0"
+    "typescript-eslint": "^8.54.0",
+    "vitest": "^4.0.18"
   }
 }
