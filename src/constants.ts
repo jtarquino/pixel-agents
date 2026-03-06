@@ -40,3 +40,6 @@ export const WORKSPACE_KEY_AGENTS = 'pixel-agents.agents';
 export const WORKSPACE_KEY_AGENT_SEATS = 'pixel-agents.agentSeats';
 export const WORKSPACE_KEY_LAYOUT = 'pixel-agents.layout';
 export const TERMINAL_NAME_PREFIX = 'Claude Code';
+
+// ── Agent Backend ────────────────────────────────────────────
+export const AGENT_BACKEND = 'auto' as 'claude' | 'copilot' | 'auto';
