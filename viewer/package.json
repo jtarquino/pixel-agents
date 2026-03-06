@@ -1,0 +1,20 @@
+{
+  "name": "pixel-agents-viewer",
+  "version": "1.0.0",
+  "description": "Standalone Pixel Agents viewer — visualize Copilot CLI sessions as pixel art characters",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "npm run build && electron dist/main.js",
+    "dev": "tsc -p tsconfig.json && electron dist/main.js"
+  },
+  "dependencies": {
+    "pngjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pngjs": "^6.0.5",
+    "electron": "^36.5.0",
+    "typescript": "^5.9.3"
+  }
+}

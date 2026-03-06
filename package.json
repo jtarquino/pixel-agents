@@ -61,7 +61,9 @@
     "lint": "eslint src",
     "test": "vitest run",
     "test:watch": "vitest",
-    "import-tileset": "tsx scripts/import-tileset-cli.ts"
+    "import-tileset": "tsx scripts/import-tileset-cli.ts",
+    "viewer": "cd viewer && npm run dev",
+    "viewer:build": "cd viewer && npm run build"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
