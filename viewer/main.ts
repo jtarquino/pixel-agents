@@ -176,6 +176,19 @@ function readWorkspaceYaml(sessionDir: string): string | undefined {
   return cwdMatch?.[1]?.trim();
 }
 
+function isSessionActive(sessionDir: string): boolean {
+  const dbPath = path.join(sessionDir, 'session.db');
+  if (!fs.existsSync(dbPath)) return false;
+  try {
+    // If we can't open exclusively, a Copilot CLI process has it locked → active
+    const fd = fs.openSync(dbPath, fs.constants.O_RDWR | fs.constants.O_EXCL);
+    fs.closeSync(fd);
+    return false; // opened fine → not locked → inactive
+  } catch {
+    return true; // locked → active CLI process
+  }
+}
+
 function discoverSessions(): void {
   if (!fs.existsSync(COPILOT_DIR)) return;
 
@@ -185,16 +198,20 @@ function discoverSessions(): void {
     const uuid = entry.name;
     if (sessions.has(uuid)) continue;
 
-    const eventsPath = path.join(COPILOT_DIR, uuid, 'events.jsonl');
+    const sessionDir = path.join(COPILOT_DIR, uuid);
+    const eventsPath = path.join(sessionDir, 'events.jsonl');
     if (!fs.existsSync(eventsPath)) continue;
 
-    const cwd = readWorkspaceYaml(path.join(COPILOT_DIR, uuid));
+    // Only show sessions with an active Copilot CLI process (session.db locked)
+    if (!isSessionActive(sessionDir)) continue;
+
+    const cwd = readWorkspaceYaml(sessionDir);
     const agentId = nextAgentId++;
     sessions.set(uuid, { uuid, eventsPath, lastOffset: 0, agentId, cwd });
 
     // Notify renderer of new agent
     send('agentCreated', { id: agentId, folderName: cwd?.split(/[/\\]/).pop() || uuid.slice(0, 8) });
-    console.log(`[Viewer] Discovered session ${uuid.slice(0, 8)}... (agent #${agentId})`);
+    console.log(`[Viewer] Discovered active session ${uuid.slice(0, 8)}... (agent #${agentId})`);
   }
 }
 
@@ -335,8 +352,8 @@ function sendInitialAssets(): void {
   send('layoutLoaded', { layout: layout || null });
   console.log('[Viewer] Sent layout');
 
-  // Settings
-  send('settingsLoaded', { soundEnabled: true });
+  // Settings — sound disabled for standalone viewer
+  send('settingsLoaded', { soundEnabled: false });
 }
 
 function startPolling(): void {
