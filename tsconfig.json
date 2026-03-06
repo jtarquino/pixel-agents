@@ -16,6 +16,7 @@
 		"out",
 		"scripts",
 		"vitest.config.ts",
-		"src/__tests__"
+		"src/__tests__",
+		"e2e"
 	]
 }

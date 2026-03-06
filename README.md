@@ -2,16 +2,22 @@
 
 A VS Code extension that turns your AI coding agents into animated pixel art characters in a virtual office.
 
-Each Claude Code terminal you open spawns a character that walks around, sits at desks, and visually reflects what the agent is doing — typing when writing code, reading when searching files, waiting when it needs your attention.
+Each AI agent terminal you open spawns a character that walks around, sits at desks, and visually reflects what the agent is doing — typing when writing code, reading when searching files, waiting when it needs your attention.
 
-This is the source code for the free [Pixel Agents extension for VS Code](https://marketplace.visualstudio.com/items?itemName=pablodelucca.pixel-agents) — you can install it directly from the marketplace with the full furniture catalog included.
+**Supported backends:**
+- **Claude Code CLI** — the original backend
+- **GitHub Copilot CLI** — ✨ new! full support via `copilot --resume <uuid>`
+
+This fork adds GitHub Copilot CLI support. The [original project](https://github.com/pablodelucca/pixel-agents) by pablodelucca is also available as a [VS Code extension](https://marketplace.visualstudio.com/items?itemName=pablodelucca.pixel-agents).
 
 
 ![Pixel Agents screenshot](webview-ui/public/Screenshot.jpg)
 
 ## Features
 
-- **One agent, one character** — every Claude Code terminal gets its own animated character
+- **One agent, one character** — every AI agent terminal gets its own animated character
+- **Dual backend support** — works with both Claude Code and GitHub Copilot CLI
+- **Auto-detection** — automatically detects which backend is available (`~/.copilot` → Copilot, `claude` on PATH → Claude)
 - **Live activity tracking** — characters animate based on what the agent is actually doing (writing, reading, running commands)
 - **Office layout editor** — design your office with floors, walls, and furniture using a built-in editor
 - **Speech bubbles** — visual indicators when an agent is waiting for input or needs permission
@@ -27,7 +33,9 @@ This is the source code for the free [Pixel Agents extension for VS Code](https:
 ## Requirements
 
 - VS Code 1.109.0 or later
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and configured
+- One of:
+  - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and configured
+  - [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) installed and authenticated
 
 ## Getting Started
 
@@ -36,8 +44,9 @@ If you just want to use Pixel Agents, the easiest way is to download the [VS Cod
 ### Install from source
 
 ```bash
-git clone https://github.com/pablodelucca/pixel-agents.git
+git clone https://github.com/jtarquino/pixel-agents.git
 cd pixel-agents
+git checkout copilot-cli-support
 npm install
 cd webview-ui && npm install && cd ..
 npm run build
@@ -48,8 +57,10 @@ Then press **F5** in VS Code to launch the Extension Development Host.
 ### Usage
 
 1. Open the **Pixel Agents** panel (it appears in the bottom panel area alongside your terminal)
-2. Click **+ Agent** to spawn a new Claude Code terminal and its character
-3. Start coding with Claude — watch the character react in real time
+2. Click **+ Agent** to spawn a new agent terminal and its character
+   - If Copilot CLI is detected (`~/.copilot` exists), it launches `copilot --resume <uuid>`
+   - Otherwise, it falls back to Claude Code CLI
+3. Start coding with your AI agent — watch the character react in real time
 4. Click a character to select it, then click a seat to reassign it
 5. Click **Layout** to open the office editor and customize your space
 
@@ -81,7 +92,26 @@ The extension will still work without the tileset — you'll get the default cha
 
 ## How It Works
 
-Pixel Agents watches Claude Code's JSONL transcript files to track what each agent is doing. When an agent uses a tool (like writing a file or running a command), the extension detects it and updates the character's animation accordingly. No modifications to Claude Code are needed — it's purely observational.
+Pixel Agents watches AI agent transcript files to track what each agent is doing:
+
+- **Claude Code**: Watches JSONL transcript files in `~/.claude/projects/`
+- **Copilot CLI**: Watches `events.jsonl` in `~/.copilot/session-state/<uuid>/`
+
+When an agent uses a tool (like writing a file or running a command), the extension detects it and updates the character's animation accordingly. No modifications to either CLI are needed — it's purely observational.
+
+### Copilot CLI Integration Details
+
+The Copilot CLI backend uses explicit event signals instead of timer-based heuristics:
+
+| Signal | Copilot CLI Event | Claude Code Approach |
+|---|---|---|
+| Turn end | `assistant.turn_end` (explicit) | Timer/duration heuristic |
+| Permission needed | `tool.user_requested` (explicit) | 7s silence heuristic |
+| Tool start | `tool.execution_start` | `assistant.content[tool_use]` |
+| Tool complete | `tool.execution_complete` | `user.content[tool_result]` |
+| Agent status | `report_intent` tool | N/A |
+
+The `report_intent` tool provides rich status labels (e.g., "Exploring codebase", "Fixing tests") that are displayed as character activity text.
 
 The webview runs a lightweight game loop with canvas rendering, BFS pathfinding, and a character state machine (idle → walk → type/read). Everything is pixel-perfect at integer zoom levels.
 
@@ -89,12 +119,22 @@ The webview runs a lightweight game loop with canvas rendering, BFS pathfinding,
 
 - **Extension**: TypeScript, VS Code Webview API, esbuild
 - **Webview**: React 19, TypeScript, Vite, Canvas 2D
+- **Testing**: Vitest (unit), real Copilot CLI fixture-based integration tests
+
+### Running Tests
+
+```bash
+npm test              # Run unit tests
+npm run test:watch    # Watch mode
+```
 
 ## Known Limitations
 
-- **Agent-terminal sync** — the way agents are connected to Claude Code terminal instances is not super robust and sometimes desyncs, especially when terminals are rapidly opened/closed or restored across sessions.
-- **Heuristic-based status detection** — Claude Code's JSONL transcript format does not provide clear signals for when an agent is waiting for user input or when it has finished its turn. The current detection is based on heuristics (idle timers, turn-duration events) and often misfires — agents may briefly show the wrong status or miss transitions.
-- **Windows-only testing** — the extension has only been tested on Windows 11. It may work on macOS or Linux, but there could be unexpected issues with file watching, paths, or terminal behavior on those platforms.
+- **Agent-terminal sync** — the way agents are connected to terminal instances is not super robust and sometimes desyncs, especially when terminals are rapidly opened/closed or restored across sessions.
+- **Heuristic-based status detection (Claude only)** — Claude Code's JSONL format does not provide clear signals for when an agent is waiting for user input. The Copilot CLI backend resolves this with explicit `assistant.turn_end` and `tool.user_requested` events.
+- **No sub-agent streaming (Copilot)** — Copilot CLI's `task` tool doesn't stream nested events from sub-agents, so sub-agent characters show a generic "Running subtask" status.
+- **Copilot CLI format not stable** — the `events.jsonl` format may change between Copilot CLI versions. Defensive parsing is used.
+- **Windows-focused testing** — the extension has been primarily tested on Windows 11. It should work on macOS/Linux but may have unexpected issues.
 
 ## Roadmap
 
