@@ -10,6 +10,9 @@
   },
   "icon": "icon.png",
   "license": "MIT",
+  "bin": {
+    "pixel-agents": "bin/pixel-agents.js"
+  },
   "engines": {
     "vscode": "^1.107.0"
   },
