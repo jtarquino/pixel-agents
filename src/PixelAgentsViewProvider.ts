@@ -12,11 +12,30 @@ import {
 	sendLayout,
 	getProjectDirPath,
 } from './agentManager.js';
+import {
+	launchCopilotTerminal,
+	removeCopilotAgent,
+	restoreCopilotAgents,
+	persistCopilotAgents,
+	sendExistingCopilotAgents,
+} from './copilotAgentManager.js';
 import { ensureProjectScan } from './fileWatcher.js';
 import { loadFurnitureAssets, sendAssetsToWebview, loadFloorTiles, sendFloorTilesToWebview, loadWallTiles, sendWallTilesToWebview, loadCharacterSprites, sendCharacterSpritesToWebview, loadDefaultLayout } from './assetLoader.js';
-import { WORKSPACE_KEY_AGENT_SEATS, GLOBAL_KEY_SOUND_ENABLED } from './constants.js';
+import { WORKSPACE_KEY_AGENT_SEATS, GLOBAL_KEY_SOUND_ENABLED, AGENT_BACKEND } from './constants.js';
 import { writeLayoutToFile, readLayoutFromFile, watchLayoutFile } from './layoutPersistence.js';
 import type { LayoutWatcher } from './layoutPersistence.js';
+
+function detectBackend(): 'claude' | 'copilot' {
+	if (AGENT_BACKEND === 'claude' || AGENT_BACKEND === 'copilot') {
+		return AGENT_BACKEND;
+	}
+	// Auto-detect: prefer copilot if ~/.copilot exists, fall back to claude
+	const copilotDir = path.join(os.homedir(), '.copilot');
+	if (fs.existsSync(copilotDir)) {
+		return 'copilot';
+	}
+	return 'claude';
+}
 
 export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	nextAgentId = { current: 1 };
@@ -42,7 +61,13 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	// Cross-window layout sync
 	layoutWatcher: LayoutWatcher | null = null;
 
-	constructor(private readonly context: vscode.ExtensionContext) {}
+	// Backend detection
+	readonly backend: 'claude' | 'copilot';
+
+	constructor(private readonly context: vscode.ExtensionContext) {
+		this.backend = detectBackend();
+		console.log(`[Pixel Agents] Using backend: ${this.backend}`);
+	}
 
 	private get extensionUri(): vscode.Uri {
 		return this.context.extensionUri;
@@ -53,7 +78,11 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	private persistAgents = (): void => {
-		persistAgents(this.agents, this.context);
+		if (this.backend === 'copilot') {
+			persistCopilotAgents(this.agents, this.context);
+		} else {
+			persistAgents(this.agents, this.context);
+		}
 	};
 
 	resolveWebviewView(webviewView: vscode.WebviewView) {
@@ -63,14 +92,25 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 
 		webviewView.webview.onDidReceiveMessage(async (message) => {
 			if (message.type === 'openClaude') {
-				await launchNewTerminal(
-					this.nextAgentId, this.nextTerminalIndex,
-					this.agents, this.activeAgentId, this.knownJsonlFiles,
-					this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
-					this.jsonlPollTimers, this.projectScanTimer,
-					this.webview, this.persistAgents,
-					message.folderPath as string | undefined,
-				);
+				if (this.backend === 'copilot') {
+					await launchCopilotTerminal(
+						this.nextAgentId, this.nextTerminalIndex,
+						this.agents, this.activeAgentId,
+						this.fileWatchers, this.pollingTimers,
+						this.jsonlPollTimers,
+						this.webview, this.persistAgents,
+						message.folderPath as string | undefined,
+					);
+				} else {
+					await launchNewTerminal(
+						this.nextAgentId, this.nextTerminalIndex,
+						this.agents, this.activeAgentId, this.knownJsonlFiles,
+						this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
+						this.jsonlPollTimers, this.projectScanTimer,
+						this.webview, this.persistAgents,
+						message.folderPath as string | undefined,
+					);
+				}
 			} else if (message.type === 'focusAgent') {
 				const agent = this.agents.get(message.id);
 				if (agent) {
@@ -91,14 +131,25 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 			} else if (message.type === 'setSoundEnabled') {
 				this.context.globalState.update(GLOBAL_KEY_SOUND_ENABLED, message.enabled);
 			} else if (message.type === 'webviewReady') {
-				restoreAgents(
-					this.context,
-					this.nextAgentId, this.nextTerminalIndex,
-					this.agents, this.knownJsonlFiles,
-					this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
-					this.jsonlPollTimers, this.projectScanTimer, this.activeAgentId,
-					this.webview, this.persistAgents,
-				);
+				if (this.backend === 'copilot') {
+					restoreCopilotAgents(
+						this.context,
+						this.nextAgentId, this.nextTerminalIndex,
+						this.agents,
+						this.fileWatchers, this.pollingTimers,
+						this.jsonlPollTimers,
+						this.webview, this.persistAgents,
+					);
+				} else {
+					restoreAgents(
+						this.context,
+						this.nextAgentId, this.nextTerminalIndex,
+						this.agents, this.knownJsonlFiles,
+						this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
+						this.jsonlPollTimers, this.projectScanTimer, this.activeAgentId,
+						this.webview, this.persistAgents,
+					);
+				}
 				// Send persisted settings to webview
 				const soundEnabled = this.context.globalState.get<boolean>(GLOBAL_KEY_SOUND_ENABLED, true);
 				this.webview?.postMessage({ type: 'settingsLoaded', soundEnabled });
@@ -112,11 +163,12 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					});
 				}
 
-				// Ensure project scan runs even with no restored agents (to adopt external terminals)
-				const projectDir = getProjectDirPath();
+				// Ensure project scan runs even with no restored agents (Claude only)
+				const projectDir = this.backend === 'claude' ? getProjectDirPath() : null;
 				const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 				console.log('[Extension] workspaceRoot:', workspaceRoot);
 				console.log('[Extension] projectDir:', projectDir);
+				console.log('[Extension] backend:', this.backend);
 				if (projectDir) {
 					ensureProjectScan(
 						projectDir, this.knownJsonlFiles, this.projectScanTimer, this.activeAgentId,
@@ -223,7 +275,11 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 						}
 					})();
 				}
-				sendExistingAgents(this.agents, this.context, this.webview);
+				if (this.backend === 'copilot') {
+					sendExistingCopilotAgents(this.agents, this.context, this.webview);
+				} else {
+					sendExistingAgents(this.agents, this.context, this.webview);
+				}
 			} else if (message.type === 'openSessionsFolder') {
 				const projectDir = getProjectDirPath();
 				if (projectDir && fs.existsSync(projectDir)) {
@@ -284,11 +340,19 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 					if (this.activeAgentId.current === id) {
 						this.activeAgentId.current = null;
 					}
-					removeAgent(
-						id, this.agents,
-						this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
-						this.jsonlPollTimers, this.persistAgents,
-					);
+					if (this.backend === 'copilot') {
+						removeCopilotAgent(
+							id, this.agents,
+							this.fileWatchers, this.pollingTimers,
+							this.jsonlPollTimers, this.persistAgents,
+						);
+					} else {
+						removeAgent(
+							id, this.agents,
+							this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
+							this.jsonlPollTimers, this.persistAgents,
+						);
+					}
 					webviewView.webview.postMessage({ type: 'agentClosed', id });
 				}
 			}
@@ -325,11 +389,19 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 		this.layoutWatcher?.dispose();
 		this.layoutWatcher = null;
 		for (const id of [...this.agents.keys()]) {
-			removeAgent(
-				id, this.agents,
-				this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
-				this.jsonlPollTimers, this.persistAgents,
-			);
+			if (this.backend === 'copilot') {
+				removeCopilotAgent(
+					id, this.agents,
+					this.fileWatchers, this.pollingTimers,
+					this.jsonlPollTimers, this.persistAgents,
+				);
+			} else {
+				removeAgent(
+					id, this.agents,
+					this.fileWatchers, this.pollingTimers, this.waitingTimers, this.permissionTimers,
+					this.jsonlPollTimers, this.persistAgents,
+				);
+			}
 		}
 		if (this.projectScanTimer.current) {
 			clearInterval(this.projectScanTimer.current);
