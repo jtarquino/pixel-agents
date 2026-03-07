@@ -210,19 +210,25 @@ function readWorkspaceYaml(sessionDir: string): { cwd?: string; summary?: string
   };
 }
 
+const ACTIVE_THRESHOLD_MS = 60 * 60 * 1000; // Sessions with events in last hour are active
+
 function isSessionActive(sessionDir: string): boolean {
-  // Primary: session.db locked by a running Copilot CLI process
-  // On Windows, rename fails with EBUSY when file is locked by another process
+  // 1. session.db locked by a running Copilot CLI process
   const dbPath = path.join(sessionDir, 'session.db');
   if (fs.existsSync(dbPath)) {
     try {
-      fs.renameSync(dbPath, dbPath); // same-name rename tests lock without side effects
-      // Rename succeeded → not locked → check fallback
+      fs.renameSync(dbPath, dbPath);
     } catch {
-      return true; // EBUSY → locked → active CLI process
+      return true; // EBUSY → locked → active
     }
   }
-  // Fallback: workspace.yaml created in the last 60 seconds (session just started, no db yet)
+  // 2. events.jsonl modified recently (some sessions don't create session.db)
+  const eventsPath = path.join(sessionDir, 'events.jsonl');
+  if (fs.existsSync(eventsPath)) {
+    const stat = fs.statSync(eventsPath);
+    if (Date.now() - stat.mtimeMs < ACTIVE_THRESHOLD_MS) return true;
+  }
+  // 3. workspace.yaml created very recently (session just started)
   const yamlPath = path.join(sessionDir, 'workspace.yaml');
   if (fs.existsSync(yamlPath)) {
     const stat = fs.statSync(yamlPath);
