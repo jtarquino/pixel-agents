@@ -136,17 +136,36 @@ function loadWallTiles(): string[][][] | null {
   return sprites;
 }
 
+const BUILTIN_TYPES = new Set(['desk', 'bookshelf', 'plant', 'cooler', 'whiteboard', 'chair', 'pc', 'lamp']);
+
+function layoutHasUnknownFurniture(layout: Record<string, unknown>): boolean {
+  const furniture = layout.furniture as Array<{ type: string }> | undefined;
+  if (!furniture) return false;
+  return furniture.some(f => !BUILTIN_TYPES.has(f.type));
+}
+
 function loadDefaultLayout(): Record<string, unknown> | null {
   // 1. Try user's saved layout (~/.pixel-agents/layout.json)
   const savedPath = path.join(os.homedir(), '.pixel-agents', 'layout.json');
   if (fs.existsSync(savedPath)) {
     try {
       const layout = JSON.parse(fs.readFileSync(savedPath, 'utf-8'));
-      console.log(`[Viewer] Loaded saved layout from ${savedPath} (${layout.cols}×${layout.rows})`);
-      return layout;
+      // Only use saved layout if all furniture types are built-in (no licensed tileset assets)
+      if (!layoutHasUnknownFurniture(layout)) {
+        console.log(`[Viewer] Loaded saved layout from ${savedPath} (${layout.cols}×${layout.rows})`);
+        return layout;
+      }
+      console.log('[Viewer] Saved layout uses custom tileset assets — using viewer office layout');
     } catch { /* fall through */ }
   }
-  // 2. Fall back to bundled default
+  // 2. Try viewer's own office layout
+  const viewerLayout = path.join(__dirname, '..', 'office-layout.json');
+  if (fs.existsSync(viewerLayout)) {
+    const layout = JSON.parse(fs.readFileSync(viewerLayout, 'utf-8'));
+    console.log(`[Viewer] Loaded viewer office layout (${layout.cols}×${layout.rows})`);
+    return layout;
+  }
+  // 3. Fall back to bundled default
   const layoutPath = path.join(ASSET_DIR, 'default-layout.json');
   if (!fs.existsSync(layoutPath)) return null;
   return JSON.parse(fs.readFileSync(layoutPath, 'utf-8'));
